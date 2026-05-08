@@ -25,7 +25,7 @@ ENV LC_ALL=en_US.UTF-8 \
     LANGUAGE=en_US.UTF-8
 
 # Set up user
-ARG NB_USER=guest
+ARG NB_USER=jovyan
 ARG NB_UID=1000
 ENV USER=${NB_USER}
 ENV HOME=/home/${NB_USER}
@@ -38,6 +38,8 @@ RUN python -m pip install --upgrade pip
 # Copy docker files
 COPY .binder/Dockerfile /docker/Dockerfile
 COPY .binder/requirements.txt /docker/requirements.txt
+COPY .binder/entrypoint.sh /docker/entrypoint.sh
+RUN chmod +x /docker/entrypoint.sh
 
 # Install requirements
 RUN pip install --no-cache-dir -r /docker/requirements.txt
@@ -77,5 +79,5 @@ USER ${NB_USER}
 ENV MPLCONFIGDIR=/tmp/matplotlib
 
 # Set default command
-#CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--allow-root"]
-CMD ["marimo", "edit", "--host=0.0.0.0"]
+ENTRYPOINT ["/docker/entrypoint.sh"]
+CMD ["jupyter", "notebook", "--ip=0.0.0.0", "--allow-root"]

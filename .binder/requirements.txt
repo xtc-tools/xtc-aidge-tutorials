@@ -3,5 +3,3 @@ jupyterlab
 ipywidgets
 ipycanvas
 jupyter-server-proxy
-marimo==0.19.6
-
