@@ -12,6 +12,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     make \
     locales \
     time \
+    git-core \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y nodejs \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
@@ -45,18 +46,25 @@ RUN chmod +x /docker/entrypoint.sh
 RUN pip install --no-cache-dir -r /docker/requirements.txt
 
 # # Install Aidge modules
-# RUN pip install --upgrade --no-cache-dir \
-#     aidge-core \
-#     aidge-backend-cpu \
-#     aidge-learning \
-#     aidge-export-cpp \
-#     aidge-onnx \
-#     aidge-quantization \
-#     aidge-backend-cuda \
-#     aidge-backend-opencv \
-#     aidge-model-explorer \
-#     aidge-export-arm-cortexm
+RUN pip install --no-cache-dir \
+    aidge-core==0.6.1 \
+    aidge-backend-cpu==0.6.1 \
+    aidge-export-cpp==0.3.1 \
+    aidge-onnx==0.5.1 \
+    aidge-model==0.1.0
 
+XTC_REPO=http://githib.com/xtc_tools/xtc
+XTC_REVISION=f8246794a6951eb5627959e8d8e07f9ae9f6f070
+# Install XTC
+RUN git clone $XTC_REPO /tmp/xtc && \
+    cd /tmp/xtc && \
+    git checkout $XTC_REV && \
+    pip install --no-cache-dir . && \
+    pip install --no-cache-dir -r mlir_requirements.txt && \
+    pip install --no-cache-dir -r tvm_requirements.txt && \
+    cd / && \
+    rm -rf /tmp/xtc \
+      
 # # Patch server.py from ai_edge_model_explorer to run on Binder
 # COPY ./.binder/patched_server.py /tmp/patched_server.py
 # RUN python -c "import model_explorer, os; import shutil; shutil.copy('/tmp/patched_server.py', os.path.join(os.path.dirname(model_explorer.__file__), 'server.py'))"
