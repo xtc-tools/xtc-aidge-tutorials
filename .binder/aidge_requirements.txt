@@ -1,0 +1,5 @@
+aidge-core==0.6.1
+aidge-backend-cpu==0.6.1
+aidge-export-cpp==0.3.1
+aidge-onnx==0.5.1
+aidge-model-explorer==0.1.0

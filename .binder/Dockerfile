@@ -38,23 +38,19 @@ RUN python -m pip install --upgrade pip
 
 # Copy docker files
 COPY .binder/requirements.txt /docker/requirements.txt
+COPY .binder/requirements.txt /docker/aidge_requirements.txt
 COPY .binder/entrypoint.sh /docker/entrypoint.sh
 RUN chmod +x /docker/entrypoint.sh
 
 # Install requirements
 RUN pip install --no-cache-dir -r /docker/requirements.txt
 
-# # Install Aidge modules
-RUN pip install --no-cache-dir \
-    aidge-core==0.6.1 \
-    aidge-backend-cpu==0.6.1 \
-    aidge-export-cpp==0.3.1 \
-    aidge-onnx==0.5.1 \
-    aidge-model-explorer==0.1.0
+# Install Aidge modules
+RUN pip install --no-cache-dir -r /docker/aidge_requirements.txt
 
+# Install XTC
 ENV XTC_REPO=https://github.com/xtc-tools/xtc
 ENV XTC_REVISION=f8246794a6951eb5627959e8d8e07f9ae9f6f070
-# Install XTC
 RUN git clone $XTC_REPO /tmp/xtc && \
     cd /tmp/xtc && \
     git checkout $XTC_REV && \
@@ -73,7 +69,7 @@ RUN mkdir -p ${HOME}/work
 COPY ./tutorials ${HOME}/work
 RUN chown -R ${NB_USER}:${NB_USER} ${HOME}/work
 
-# Create writable dir for 
+# Create writable dir for matplotlib tmp
 RUN mkdir -p /tmp/matplotlib && chown -R ${NB_USER} /tmp/matplotlib
 
 # Switch to the working directory
