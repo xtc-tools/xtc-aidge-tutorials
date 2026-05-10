@@ -37,7 +37,6 @@ RUN useradd -m -s /bin/bash --uid ${NB_UID} ${NB_USER}
 RUN python -m pip install --upgrade pip
 
 # Copy docker files
-COPY .binder/Dockerfile /docker/Dockerfile
 COPY .binder/requirements.txt /docker/requirements.txt
 COPY .binder/entrypoint.sh /docker/entrypoint.sh
 RUN chmod +x /docker/entrypoint.sh
@@ -51,10 +50,10 @@ RUN pip install --no-cache-dir \
     aidge-backend-cpu==0.6.1 \
     aidge-export-cpp==0.3.1 \
     aidge-onnx==0.5.1 \
-    aidge-model==0.1.0
+    aidge-model-explorer==0.1.0
 
-XTC_REPO=http://githib.com/xtc_tools/xtc
-XTC_REVISION=f8246794a6951eb5627959e8d8e07f9ae9f6f070
+ENV XTC_REPO=https://github.com/xtc-tools/xtc
+ENV XTC_REVISION=f8246794a6951eb5627959e8d8e07f9ae9f6f070
 # Install XTC
 RUN git clone $XTC_REPO /tmp/xtc && \
     cd /tmp/xtc && \
@@ -63,10 +62,10 @@ RUN git clone $XTC_REPO /tmp/xtc && \
     pip install --no-cache-dir -r mlir_requirements.txt && \
     pip install --no-cache-dir -r tvm_requirements.txt && \
     cd / && \
-    rm -rf /tmp/xtc \
+    rm -rf /tmp/xtc
       
 # # Patch server.py from ai_edge_model_explorer to run on Binder
-# COPY ./.binder/patched_server.py /tmp/patched_server.py
+# COPY $BINDER_DIR/patched_server.py /tmp/patched_server.py
 # RUN python -c "import model_explorer, os; import shutil; shutil.copy('/tmp/patched_server.py', os.path.join(os.path.dirname(model_explorer.__file__), 'server.py'))"
 
 # Copy tutorials files to writable directory
