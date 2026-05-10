@@ -1,0 +1,7 @@
+tmp.*
+tutorials/*.c
+tutorials/*.so
+.ipynb_checkpoints
+__pycache__
+.venv
+*~
