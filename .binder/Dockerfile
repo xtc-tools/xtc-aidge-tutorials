@@ -62,7 +62,7 @@ RUN git clone $XTC_REPO /tmp/xtc && \
 
 # Install Aidge Export Compile
 ENV AEC_REPO=https://gitlab.eclipse.org/cguillon/aidge-export-compile
-ENV AEC_REVISION=d1973dc40754f3260c6d52b4250510770fc38bc4
+ENV AEC_REVISION=a8a45f96ac3423b9f4fd3c836b6cccd65f824f9a
 RUN git clone $AEC_REPO /tmp/aidge-export-compile && \
     cd /tmp/aidge-export-compile && \
     git checkout $AEC_REV && \
@@ -83,8 +83,8 @@ RUN git clone $AB_REPO /tmp/aidge_benchmark && \
 # Patch aidge
 COPY .binder/aidge_core.patch /docker/
 COPY .binder/aidge_export_cpp.patch /docker
-RUN cd /usr/local/lib/python3.10/site-packages/ && patch -p1 -i aidge_core.patch
-RUN cd /usr/local/lib/python3.10/site-packages/ && patch -p1 -i aidge_export_cpp.patch
+RUN cd /usr/local/lib/python3.10/site-packages/ && patch -p1 -i /docker/aidge_core.patch || true
+RUN cd /usr/local/lib/python3.10/site-packages/ && patch -p1 -i /docker/aidge_export_cpp.patch || true
 
 # # Patch server.py from ai_edge_model_explorer to run on Binder
 # COPY .binder/patched_server.py /tmp/patched_server.py
