@@ -2,7 +2,12 @@
 
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/git/https%3A%2F%2Fgithub.com%2Fxtc-tools%2Fxtc-aidge-tutorials/main)
 
-## All tutorials
+Open the tutorials in [Binder](https://mybinder.org/v2/git/https%3A%2F%2Fgithub.com%2Fxtc-tools%2Fxtc-aidge-tutorials/main).
 
-- XTC Operator Compiler: [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/git/https%3A%2F%2Fgithub.com%2Fxtc-tools%2Fxtc-aidge-tutorials/main?filepath=xtc_op_compiler.ipynb)
-- Aidge Compiler Export: [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/git/https%3A%2F%2Fgithub.com%2Fxtc-tools%2Fxtc-aidge-tutorials/main?filepath=aidge_export_compile.ipynb)
+*Note*: this may take a while to start
+
+## Tutorials list
+
+- Aidge Compiler Export: `aidge_export_compile.ipynb`
+- XTC Operator Compiler: `xtc_op_compiler.ipynb`
+
