@@ -51,34 +51,28 @@ RUN pip install --no-cache-dir -r /docker/aidge_requirements.txt
 # Install XTC
 ENV XTC_REPO=https://github.com/guillon/xtc
 ENV XTC_REVISION=e9ece26f56271b1f819e8d96352f704356781f51
-RUN git clone $XTC_REPO /tmp/xtc && \
-    cd /tmp/xtc && \
-    git checkout $XTC_REV && \
+RUN git clone $XTC_REPO /root/xtc && \
+    cd /root/xtc && \
+    git checkout $XTC_REVISION && \
     pip install --no-cache-dir . && \
     pip install --no-cache-dir -r tvm_requirements.txt && \
-    cd / && \
-    rm -rf /tmp/xtc
-#    pip install --no-cache-dir -r mlir_requirements.txt &&
+    pip install --no-cache-dir -r mlir_requirements.txt
 
 # Install Aidge Export Compile
 ENV AEC_REPO=https://gitlab.eclipse.org/cguillon/aidge-export-compile
 ENV AEC_REVISION=a8a45f96ac3423b9f4fd3c836b6cccd65f824f9a
-RUN git clone $AEC_REPO /tmp/aidge-export-compile && \
-    cd /tmp/aidge-export-compile && \
-    git checkout $AEC_REV && \
-    pip install --no-cache-dir . && \
-    cd / && \
-    rm -rf /tmp/aidge-export-compile
+RUN git clone $AEC_REPO /root/aidge-export-compile && \
+    cd /root/aidge-export-compile && \
+    git checkout $AEC_REVISION && \
+    pip install --no-cache-dir .
 
 # Install Aidge Benchmarks
 ENV AB_REPO=https://gitlab.eclipse.org/cguillon/aidge_benchmark
 ENV AB_REVISION=b2c357fc92c4cf2b136553da05954481c2d2e797
-RUN git clone $AB_REPO /tmp/aidge_benchmark && \
-    cd /tmp/aidge_benchmark && \
-    git checkout $AB_REV && \
-    pip install --no-cache-dir . && \
-    cd / && \
-    rm -rf /tmp/aidge_benchmark
+RUN git clone $AB_REPO /root/aidge_benchmark && \
+    cd /root/aidge_benchmark && \
+    git checkout $AB_REVISION && \
+    pip install --no-cache-dir .
 
 # Patch aidge
 COPY .binder/aidge_core.patch /docker/
