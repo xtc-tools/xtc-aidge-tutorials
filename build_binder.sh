@@ -10,6 +10,6 @@ mkdir -p $tmpdir/.binder $tmpdir/tutorials
 cp -a .binder/entrypoint.sh $tmpdir/.binder/
 cp -a .binder/*requirements.txt $tmpdir/.binder
 cp -a .binder/*.patch $tmpdir/.binder/
-cp -a tutorials/*.py  tutorials/*.ipynb tutorials/*.md $tmpdir/tutorials
+cp -a tutorials/*.py  tutorials/*.ipynb tutorials/*.md tutorials/*.json $tmpdir/tutorials
 
 docker build -f .binder/Dockerfile -t xtc-aidge-tutorial-cpsiot $tmpdir
