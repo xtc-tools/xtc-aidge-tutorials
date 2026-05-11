@@ -1,0 +1,533 @@
+diff --git a/aidge_export_cpp/kernels/batchnorm.hpp b/aidge_export_cpp/kernels/batchnorm.hpp
+index 27866ab..29fd4db 100644
+--- a/aidge_export_cpp/kernels/batchnorm.hpp
++++ b/aidge_export_cpp/kernels/batchnorm.hpp
+@@ -4,7 +4,7 @@
+ #include "network/typedefs.hpp"
+ #include "network/activation_utils.hpp"
+ 
+-#include <math.h>
++#include <cmath>
+ 
+ // WARNING: this kernel only works for 32-bits floating point values
+ 
+@@ -18,21 +18,24 @@ __attribute__((always_inline)) inline
+ void batchnorm_forward (
+     const Input_T* __restrict inputs,
+     Output_T* __restrict outputs,
++    const Param_T* __restrict scales,
+     const Param_T* __restrict biases,
+-    const Param_T* __restrict variances,
+     const Param_T* __restrict means,
+-    const Param_T* __restrict scales,
++    const Param_T* __restrict variances,
+     const double epsilon,
+     const Rescaling_T& __restrict rescaling)
+ {
+     for (unsigned int batch = 0; batch < NB_BATCHES; ++batch) {
+         for (unsigned int output = 0; output < NB_OUTPUTS; ++output) {
+             // If the variance is 0, we need to avoid division by 0
+-            Output_T var = sqrt(variances[output] > 0.0 ? variances[output] + epsilon : epsilon);
++            Param_T var = sqrt(variances[output] + static_cast<Param_T>(epsilon));
+ 
+             for (int oy = 0; oy < OUTPUTS_HEIGHT; ++oy) {
+                 for (int ox = 0; ox < OUTPUTS_WIDTH; ++ox) {
+-                    const int outputOffset = batch * OUTPUTS_WIDTH * OUTPUTS_HEIGHT * NB_OUTPUTS + output * OUTPUTS_WIDTH * OUTPUTS_HEIGHT + OUTPUTS_WIDTH * oy + ox;
++                    // This is the NCHW layout
++                    //const int outputOffset = batch * OUTPUTS_WIDTH * OUTPUTS_HEIGHT * NB_OUTPUTS + output * OUTPUTS_WIDTH * OUTPUTS_HEIGHT + OUTPUTS_WIDTH * oy + ox;
++                    // This is the NHWC layout
++                    const int outputOffset = batch * OUTPUTS_HEIGHT * OUTPUTS_WIDTH * NB_OUTPUTS + oy * OUTPUTS_WIDTH * NB_OUTPUTS + ox * NB_OUTPUTS + output;
+ 
+                     const Output_T normalized = (inputs[outputOffset] - means[output]) / var;
+                     const Output_T sAs = scales[output] * normalized + biases[output];
+diff --git a/aidge_export_cpp/kernels/pad.hpp b/aidge_export_cpp/kernels/pad.hpp
+index 4e83257..9b7cedc 100644
+--- a/aidge_export_cpp/kernels/pad.hpp
++++ b/aidge_export_cpp/kernels/pad.hpp
+@@ -3,7 +3,7 @@
+ 
+ #include "network/typedefs.hpp"
+ #include "network/utils.hpp"
+-
++#include <iostream>
+ // Todo add border value and border type (Reflect, Constant, Wrap...) and add the two missing pad value (bottom and right)
+ 
+ template<int NB_BATCHES, int NB_CHANNELS,
+@@ -26,21 +26,27 @@ void pad_forward(
+     const unsigned int oxSize = CHANNELS_WIDTH + PADDING_LEFT + PADDING_RIGHT;
+ 
+     for (unsigned int batch = 0; batch < NB_BATCHES; ++batch) {
+-        for (unsigned int ch = 0; ch < NB_CHANNELS; ++ch) {
+-            const unsigned int preIndex = batch * NB_CHANNELS * CHANNELS_HEIGHT * CHANNELS_WIDTH + ch * CHANNELS_HEIGHT * CHANNELS_WIDTH;
+-
+-            for (unsigned int oy = 0; oy < oySize; ++oy) {
+-                for (unsigned int ox = 0; ox < oxSize; ++ox) {
+-                    const unsigned int outIndex = batch * NB_CHANNELS * oySize * oxSize + ch * oySize * oxSize + oy * oxSize + ox;
++        for (unsigned int oy = 0; oy < oySize; ++oy) {
++            for (unsigned int ox = 0; ox < oxSize; ++ox) {
++                for (unsigned int ch = 0; ch < NB_CHANNELS; ++ch) {
++                    const int inputX = ox - PADDING_LEFT;
++                    const int inputY = oy - PADDING_TOP;
++                    const unsigned int inpIndex =
++                        batch * CHANNELS_HEIGHT * CHANNELS_WIDTH * NB_CHANNELS +
++                        inputY * CHANNELS_WIDTH * NB_CHANNELS +
++                        inputX * NB_CHANNELS +
++                        ch;
++                    const unsigned int outIndex =
++                        batch * oySize * oxSize * NB_CHANNELS +
++                        oy * oxSize * NB_CHANNELS +
++                        ox * NB_CHANNELS +
++                        ch;
+ 
+                     outputs[outIndex] = borderValue;
+-
+-                    const unsigned int inputX = ox - PADDING_LEFT;
+-                    const unsigned int inputY = oy - PADDING_TOP;
+-
+                     if (inputY >= 0 and inputY < CHANNELS_HEIGHT and inputX >= 0 and inputX < CHANNELS_WIDTH)
+                     {
+-                        outputs[outIndex] = inputs[preIndex + inputY * CHANNELS_WIDTH + inputX];
++                        outputs[outIndex] = inputs[inpIndex];
++                        
+                     }
+                 }
+             }
+diff --git a/aidge_export_cpp/operators/Concat.py b/aidge_export_cpp/operators/Concat.py
+index a1a8959..ee5d927 100644
+--- a/aidge_export_cpp/operators/Concat.py
++++ b/aidge_export_cpp/operators/Concat.py
+@@ -17,24 +17,36 @@ class Concat(ExportNodeCpp):
+ 
+         inputIndex = 0
+ 
++        actual_axis = None
+         tensor = self.operator.get_input(0)
+         for idx, _ in enumerate(self.node.inputs()):
+             if self.operator.get_input(idx) is not None:
+                 tensor = self.operator.get_input(idx)
+-                nbDims = len(tensor.dims())
++                dims = tuple(tensor.dims())
++                nbDims = len(dims)
+                 axis = node.get_operator().attr.axis if node.get_operator().attr.axis >= 0 else node.get_operator().attr.axis + nbDims
+-
+                 assert axis < nbDims, (
+-                    f"export softmax: attribute axis == {axis} should be less than {nbDims}"
++                    f"export concat: attribute axis == {axis} should be less than {nbDims}"
+                 )
+ 
++                # Workaround for concat on NCHW tensors
++                # If actual layout is set, use it
++                if self.node.attributes().has_attr("actual_layout"):
++                    layout = tuple(self.node.attributes().get_attr("actual_layout"))
++                else:
++                    layout = tuple(range(nbDims))
++                axis = layout.index(axis)
++                dims = tuple([dims[layout[idx]] for idx in range(len(dims))])
++                assert actual_axis is None or actual_axis == axis
++                actual_axis = axis
++
+                 postAxisElems = 1
+                 for i in range(axis + 1, nbDims):
+-                    postAxisElems *= tensor.dims()[i]
++                    postAxisElems *= dims[i]
+ 
+                 preAxisElems = 1
+                 for i in range(axis):
+-                    preAxisElems *= tensor.dims()[i]
++                    preAxisElems *= dims[i]
+ 
+                 if (inputIndex == 0):
+                     self.attributes["axis_size_post"] = postAxisElems
+@@ -49,12 +61,13 @@ class Concat(ExportNodeCpp):
+                         f"export concat: axis_size_pre {self.attributes['axis_size_pre']} != {preAxisElems}"
+                     )
+ 
+-                self.attributes["axis_size"][idx] = tensor.dims()[axis]
++                self.attributes["axis_size"][idx] = dims[axis]
+             else:
+                 assert False, (
+                     f"export concat: input {idx} is None, not implemented")
+ 
+             inputIndex += 1
++        self.attributes["actual_axis"] = actual_axis
+ 
+         # Template for layer configutation file generation
+         self.config_template = str(ROOT / "templates" / "configuration" / "concat_config.jinja")
+@@ -71,4 +84,4 @@ class Concat(ExportNodeCpp):
+         # Include aidge outputs within the fwd file
+         if self.attributes["aidge_cmp"]:
+             self.include_list.append("network/utils.hpp")   # aidge_cmp function
+-            self.include_list.append("data/aidge_outputs/" + node.name() + ".hpp")
+\ No newline at end of file
++            self.include_list.append("data/aidge_outputs/" + node.name() + ".hpp")
+diff --git a/aidge_export_cpp/operators/Conv.py b/aidge_export_cpp/operators/Conv.py
+index c8137c5..dcefd05 100644
+--- a/aidge_export_cpp/operators/Conv.py
++++ b/aidge_export_cpp/operators/Conv.py
+@@ -64,6 +64,16 @@ class PadConv(QConv):
+         self.attributes["padding"] = PadNode[0].get_operator().attr.begin_end_borders
+ 
+ 
++@ExportLibCpp.register_metaop("PaddedConv2D", aidge_core.ImplSpec(aidge_core.IOSpec(aidge_core.dtype.any)))
++class PaddedConv2D(QConv):
++    def __init__(self, node, mem_info):
++        super().__init__(node, mem_info)
++
++        # Browse the metaop to update kernel attributes
++        PadNode = get_node_from_metaop(node, "Pad2D")
++        self.attributes["padding"] = PadNode[0].get_operator().attr.begin_end_borders
++
++
+ @ExportLibCpp.register_metaop("ConvAct", aidge_core.ImplSpec(aidge_core.IOSpec(aidge_core.dtype.any)))
+ class ConvAct(QConv):
+     def __init__(self, node, mem_info):
+diff --git a/aidge_export_cpp/operators/Flatten.py b/aidge_export_cpp/operators/Flatten.py
+new file mode 100644
+index 0000000..6edb06d
+--- /dev/null
++++ b/aidge_export_cpp/operators/Flatten.py
+@@ -0,0 +1,16 @@
++import aidge_core
++from aidge_core.export_utils import ExportNodeCpp
++from aidge_export_cpp import ROOT
++from aidge_export_cpp import ExportLibCpp
++
++@ExportLibCpp.register("Flatten", aidge_core.ImplSpec(aidge_core.IOSpec(aidge_core.dtype.float32)))
++class Flatten(ExportNodeCpp):
++    def __init__(self, node, mem_info):
++        super().__init__(node, mem_info)
++        self.config_template = str(
++            ROOT / "templates" / "configuration" / "flatten_config.jinja")
++        self.forward_template = str(
++            ROOT / "templates" / "kernel_forward" / "flatten_forward.jinja")
++        self.include_list = []
++        self.kernels_to_copy = []
++        self.libraries = ["cstring"]
+diff --git a/aidge_export_cpp/operators/Pool.py b/aidge_export_cpp/operators/Pool.py
+index 10d595e..e66c862 100644
+--- a/aidge_export_cpp/operators/Pool.py
++++ b/aidge_export_cpp/operators/Pool.py
+@@ -70,6 +70,12 @@ class PadMaxPool(MaxPool, PadPool):
+         super().__init__(node, mem_info)
+ 
+ 
++@ExportLibCpp.register_metaop("PaddedMaxPooling2D", aidge_core.ImplSpec(aidge_core.IOSpec(aidge_core.dtype.any)))
++class PaddedMaxPooling2D(MaxPool, PadPool):
++    def __init__(self, node, mem_info):
++        super().__init__(node, mem_info)
++
++
+ @ExportLibCpp.register_metaop("MaxPoolAct", aidge_core.ImplSpec(aidge_core.IOSpec(aidge_core.dtype.any)))
+ class MaxPoolAct(MaxPool, PoolAct):
+     def __init__(self, node, mem_info):
+@@ -136,4 +142,4 @@ class GlobalAvgPoolAct(GlobalAvgPool, PoolAct):
+ @ExportLibCpp.register_metaop("PadGlobalAvgPoolAct", aidge_core.ImplSpec(aidge_core.IOSpec(aidge_core.dtype.any)))
+ class PadGlobalAvgPoolAct(PadGlobalAvgPool, GlobalAvgPoolAct):
+     def __init__(self, node, mem_info):
+-        super().__init__(node, mem_info)
+\ No newline at end of file
++        super().__init__(node, mem_info)
+diff --git a/aidge_export_cpp/operators/Producer.py b/aidge_export_cpp/operators/Producer.py
+index 627dcb2..3ca1c52 100644
+--- a/aidge_export_cpp/operators/Producer.py
++++ b/aidge_export_cpp/operators/Producer.py
+@@ -25,21 +25,31 @@ def numpy_dtype2ctype(dtype):
+ 
+ def export_params(name: str,
+                   array: np.ndarray,
+-                  filepath: str):
++                  h_path: str,
++                  cc_path: str):
+ 
+-    # Get directory name of the file
+-    dirname = os.path.dirname(filepath)
++    # TODO; parametarize
++    mem_align = 64 # This is a number of bytes
+ 
+-    # If directory doesn't exist, create it
+-    if not os.path.exists(dirname):
+-        os.makedirs(dirname)
++    Path(h_path).parent.mkdir(parents=True, exist_ok=True)
++    Path(cc_path).parent.mkdir(parents=True, exist_ok=True)
+ 
+     generate_file(
+-        filepath,
+-        str(ROOT / "templates" / "data" / "parameters.jinja"),
++        h_path,
++        str(ROOT / "templates" / "data" / "parameters_h.jinja"),
+         name=name,
+         data_t=numpy_dtype2ctype(array.dtype),
+-        values=array.tolist()
++        dims=array.shape,
++        mem_align=mem_align,
++    )
++    generate_file(
++        cc_path,
++        str(ROOT / "templates" / "data" / "parameters_c.jinja"),
++        name=name,
++        data_t=numpy_dtype2ctype(array.dtype),
++        dims=array.shape,
++        values=array.reshape(-1).tolist(),
++        mem_align=mem_align,
+     )
+ 
+ @ExportLibCpp.register("Producer", aidge_core.ImplSpec(aidge_core.IOSpec(aidge_core.dtype.any)))
+@@ -54,14 +64,16 @@ class ProducerCPP(ExportNode):
+ 
+     def export(self, export_folder: Path):
+         if not self.ignore :
+-            header_path = f"include/parameters/{self.attributes['name']}.h"
++            h_path = f"include/parameters/{self.attributes['name']}.h"
++            cc_path = f"src/parameters/{self.attributes['name']}.cpp"
+             export_params(
+                 self.attributes['out_name'][0],
+-                self.values.reshape(-1),
+-                str(export_folder / header_path))
+-            return [header_path]
++                self.values,
++                str(export_folder / h_path),
++                str(export_folder / cc_path))
++            return [h_path]
+         return []
+ 
+     def forward(self):
+         # A Producer does nothing during forward
+-        return []
+\ No newline at end of file
++        return []
+diff --git a/aidge_export_cpp/static/Makefile b/aidge_export_cpp/static/Makefile
+index 176b8fc..cb61164 100644
+--- a/aidge_export_cpp/static/Makefile
++++ b/aidge_export_cpp/static/Makefile
+@@ -1,6 +1,7 @@
+ CC := g++
+-CCFLAGS := ${CCFLAGS} -O2 -Wall -Wextra -MMD -fopenmp
+-LDFLAGS := ${LDFLAGS} -fopenmp
++OMPFLAGS := -fopenmp
++CCFLAGS := ${CCFLAGS} -O2 -Wall -Wextra -Wno-unused-function -MMD ${OMPFLAGS}
++LDFLAGS := ${LDFLAGS} ${OMPFLAGS}
+ OBJDIR := build
+ DNNDIR := dnn
+ BINDIR := bin
+diff --git a/aidge_export_cpp/templates/configuration/concat_config.jinja b/aidge_export_cpp/templates/configuration/concat_config.jinja
+index ea8246d..91b1e30 100644
+--- a/aidge_export_cpp/templates/configuration/concat_config.jinja
++++ b/aidge_export_cpp/templates/configuration/concat_config.jinja
+@@ -7,7 +7,7 @@
+ 
+ // Attributes
+ #define {{ name|upper }}_NB_INPUTS {{ nb_in }}
+-#define {{ name|upper }}_AXIS {{ axis }}
++#define {{ name|upper }}_AXIS {{ actual_axis }}
+ {%- for i in range(nb_in) %}
+ #define {{ name|upper }}_INPUT_{{i}}_SIZE {{ axis_size[i] }}
+ {%- endfor %}
+diff --git a/aidge_export_cpp/templates/configuration/flatten_config.jinja b/aidge_export_cpp/templates/configuration/flatten_config.jinja
+new file mode 100644
+index 0000000..88c8cc2
+--- /dev/null
++++ b/aidge_export_cpp/templates/configuration/flatten_config.jinja
+@@ -0,0 +1,10 @@
++{#- For name header -#}
++#ifndef {{ name|upper }}_LAYER_H
++#define {{ name|upper }}_LAYER_H
++
++{% include "./_def_io.jinja" %}
++{% include "./_meminfo.jinja" %}
++{# For layer configuration -#}
++#define {{ name|upper }}_NB_ELTS {{ in_dims[0]|join('*') }}
++
++#endif /* {{ name|upper }}_LAYER_H */
+diff --git a/aidge_export_cpp/templates/data/parameters.jinja b/aidge_export_cpp/templates/data/parameters.jinja
+index b58ca9c..fd60dcc 100644
+--- a/aidge_export_cpp/templates/data/parameters.jinja
++++ b/aidge_export_cpp/templates/data/parameters.jinja
+@@ -2,7 +2,7 @@
+ #include <stdint.h>
+ 
+ {# Design header of the array -#}
+-static const {{ data_t }} {{ name }}[{{ values|length }}] __attribute__((section(".nn_data"))) =
++static const {{ data_t }} {{ name }}[{{ dims |join("*") }}] __attribute__((section(".nn_data"))){% if mem_align is defined and mem_align %} __attribute__((aligned({{ mem_align }}))){% endif %} =
+ {
+     {# For loop to add new elements -#}
+     {%- for i in range(values|length) %}
+diff --git a/aidge_export_cpp/templates/data/parameters_c.jinja b/aidge_export_cpp/templates/data/parameters_c.jinja
+new file mode 100644
+index 0000000..8581946
+--- /dev/null
++++ b/aidge_export_cpp/templates/data/parameters_c.jinja
+@@ -0,0 +1,21 @@
++{#- For libraries -#}
++#include <stdint.h>
++
++{# Design header of the array -#}
++extern const {{ data_t }} {{ name }}[{{ dims |join("*") }}] __attribute__((section(".nn_data"))){% if mem_align is defined and mem_align %} __attribute__((aligned({{ mem_align }}))){% endif %} =
++{
++    {# For loop to add new elements -#}
++    {%- for i in range(values|length) %}
++
++        {#- Last value -#}
++        {%- if (i+1) == values|length -%}
++        {{ values[i]|string }}
++        {%- else -%}
++            {%- if (i+1) % 5 == 0 -%}
++            {{ values[i]|string + ",\n\t" }}
++            {%- else -%}
++            {{ values[i]|string + ", " }}
++            {%- endif -%}
++        {%- endif -%}
++    {%- endfor %}
++};
+diff --git a/aidge_export_cpp/templates/data/parameters_h.jinja b/aidge_export_cpp/templates/data/parameters_h.jinja
+new file mode 100644
+index 0000000..fc81930
+--- /dev/null
++++ b/aidge_export_cpp/templates/data/parameters_h.jinja
+@@ -0,0 +1,5 @@
++{#- For libraries -#}
++#include <stdint.h>
++
++{# Design header of the array -#}
++extern const {{ data_t }} {{ name }}[] {% if mem_align is defined and mem_align %} __attribute__((aligned({{ mem_align }}))){% endif %};
+diff --git a/aidge_export_cpp/templates/kernel_forward/_function_proto.jinja b/aidge_export_cpp/templates/kernel_forward/_function_proto.jinja
+new file mode 100644
+index 0000000..40a1765
+--- /dev/null
++++ b/aidge_export_cpp/templates/kernel_forward/_function_proto.jinja
+@@ -0,0 +1,6 @@
++#ifdef __cplusplus
++extern "C"
++#else
++extern
++#endif
++void {{name}}({% for idx in range(nb_in) %}{% if idx > 0 %}, {% endif %}const {{in_cdtype[idx]}} * __restrict__ input{{idx}}{% endfor %}{% for idx in range(nb_out) %}{% if nb_in + idx > 0 %}, {% endif %}{{out_cdtype[idx]}} * __restrict__ output{{idx}}{% endfor %});
+diff --git a/aidge_export_cpp/templates/kernel_forward/_kernel_call.jinja b/aidge_export_cpp/templates/kernel_forward/_kernel_call.jinja
+new file mode 100644
+index 0000000..1713bf9
+--- /dev/null
++++ b/aidge_export_cpp/templates/kernel_forward/_kernel_call.jinja
+@@ -0,0 +1,6 @@
++{% filter indent(width=4, first=False) %}
++{% include "./_mem_offset.jinja" %}
++{{name}}({% for idx in range(nb_in) %}{% if idx > 0 %}, {% endif %}{{in_name[idx]}}{% endfor %}{% for idx in range(nb_out) %}{% if nb_in + idx > 0 %}, {% endif %}{{out_name[idx]}}{% endfor %});
++{% include "./_save_outputs.jinja" %}
++{% include "./_aidge_cmp.jinja" %}
++{% endfilter %}
+diff --git a/aidge_export_cpp/templates/kernel_forward/_kernel_proto.jinja b/aidge_export_cpp/templates/kernel_forward/_kernel_proto.jinja
+new file mode 100644
+index 0000000..7c77f94
+--- /dev/null
++++ b/aidge_export_cpp/templates/kernel_forward/_kernel_proto.jinja
+@@ -0,0 +1 @@
++void {{name}}({% for idx in range(nb_in) %}{% if idx > 0 %}, {% endif %}const {{in_cdtype[idx]}} * __restrict__ {{in_name[idx]}}{% endfor %}{% for idx in range(nb_out) %}{% if nb_in + idx > 0 %}, {% endif %}{{out_cdtype[idx]}} * __restrict__ {{out_name[idx]}}{% endfor %})
+diff --git a/aidge_export_cpp/templates/kernel_forward/_mem_offset.jinja b/aidge_export_cpp/templates/kernel_forward/_mem_offset.jinja
+index f3bea03..4b5f6df 100644
+--- a/aidge_export_cpp/templates/kernel_forward/_mem_offset.jinja
++++ b/aidge_export_cpp/templates/kernel_forward/_mem_offset.jinja
+@@ -1,3 +1,5 @@
++{% if meminfo is defined and meminfo %}
+ {%- for outidx in range(nb_out) %}
+ {{out_cdtype[outidx]}}* {{out_name[outidx]}} = ({{out_cdtype[outidx]}}*) mem + {{out_name[outidx]|upper}}_OFFSET;
+ {%- endfor %}
++{% endif %}
+diff --git a/aidge_export_cpp/templates/kernel_forward/_save_outputs.jinja b/aidge_export_cpp/templates/kernel_forward/_save_outputs.jinja
+index 6865be5..0a99344 100644
+--- a/aidge_export_cpp/templates/kernel_forward/_save_outputs.jinja
++++ b/aidge_export_cpp/templates/kernel_forward/_save_outputs.jinja
+@@ -1,4 +1,4 @@
+-
++{% if save_output is defined and save_output %}
+ #if SAVE_OUTPUTS
+ {% for outidx in range(nb_out) -%}
+     FILE* {{out_name[outidx]|upper}}_STREAM = fopen("data/export_outputs/{{out_name[outidx]}}.txt", "w");
+@@ -17,3 +17,4 @@
+     fclose({{out_name[outidx]|upper}}_STREAM);
+ {% endfor %}
+ #endif
++{% endif %}
+\ No newline at end of file
+diff --git a/aidge_export_cpp/templates/kernel_forward/flatten_forward.jinja b/aidge_export_cpp/templates/kernel_forward/flatten_forward.jinja
+new file mode 100644
+index 0000000..849483f
+--- /dev/null
++++ b/aidge_export_cpp/templates/kernel_forward/flatten_forward.jinja
+@@ -0,0 +1,6 @@
++{% filter indent(width=4, first=False) %}
++{% include "./_mem_offset.jinja" %}
++std::memcpy({{out_name[0]}}, {{in_name[0]}}, {{ name|upper }}_NB_ELTS * sizeof({{out_cdtype[0]}}));
++{% include "./_save_outputs.jinja" %}
++{% include "./_aidge_cmp.jinja" %}
++{% endfilter %}
+diff --git a/aidge_export_cpp/templates/kernel_forward/fullyconnected_func.jinja b/aidge_export_cpp/templates/kernel_forward/fullyconnected_func.jinja
+new file mode 100644
+index 0000000..6b6a5b7
+--- /dev/null
++++ b/aidge_export_cpp/templates/kernel_forward/fullyconnected_func.jinja
+@@ -0,0 +1,7 @@
++#ifdef __cplusplus
++extern "C"
++#endif
++{% include "./_function_proto.jinja" %}
++{
++{% include "./fullyconnected_forward.jinja" %}
++}
+diff --git a/aidge_export_cpp/templates/kernel_forward/kernel_call.jinja b/aidge_export_cpp/templates/kernel_forward/kernel_call.jinja
+new file mode 100644
+index 0000000..1713bf9
+--- /dev/null
++++ b/aidge_export_cpp/templates/kernel_forward/kernel_call.jinja
+@@ -0,0 +1,6 @@
++{% filter indent(width=4, first=False) %}
++{% include "./_mem_offset.jinja" %}
++{{name}}({% for idx in range(nb_in) %}{% if idx > 0 %}, {% endif %}{{in_name[idx]}}{% endfor %}{% for idx in range(nb_out) %}{% if nb_in + idx > 0 %}, {% endif %}{{out_name[idx]}}{% endfor %});
++{% include "./_save_outputs.jinja" %}
++{% include "./_aidge_cmp.jinja" %}
++{% endfilter %}
+diff --git a/aidge_export_cpp/templates/kernel_forward/kernel_decl.jinja b/aidge_export_cpp/templates/kernel_forward/kernel_decl.jinja
+new file mode 100644
+index 0000000..47c053b
+--- /dev/null
++++ b/aidge_export_cpp/templates/kernel_forward/kernel_decl.jinja
+@@ -0,0 +1,8 @@
++{% filter indent(width=4, first=False) %}
++#ifdef __cplusplus
++extern "C"
++#else
++extern
++#endif
++{% include "./function_proto.jinja" %} ;
++{% endfilter %}
+diff --git a/aidge_export_cpp/unit_tests/test_export.py b/aidge_export_cpp/unit_tests/test_export.py
+index 0a34153..4ddd6b4 100644
+--- a/aidge_export_cpp/unit_tests/test_export.py
++++ b/aidge_export_cpp/unit_tests/test_export.py
+@@ -478,6 +478,14 @@ class test_operator_export(unittest.TestCase):
+ 
+         self.unit_test_export(model, "Conv2D", [[1, 3, 12, 12]], False, False)
+ 
++    def test_paddedConv2D(self):
++        print("PaddedConv2D")
++        model = aidge_core.sequential([
++            aidge_core.PaddedConv2D(in_channels=3, out_channels=3, kernel_dims=(3, 3), name="padded_conv")
++        ])
++        initFiller(model)
++        self.unit_test_export(model, "PaddedConv2D", [[1, 3, 12, 12]], False, False)
++
+     def test_convDepthWise2D(self):
+         print("ConvDepthWise2D")
+         model = aidge_core.sequential([
+@@ -494,6 +502,14 @@ class test_operator_export(unittest.TestCase):
+ 
+         self.unit_test_export(model, "MaxPooling2D", [[1, 2, 12, 12]], False, False)
+ 
++    def test_padded_max_pooling(self):
++        print("PaddedMaxPooling2D")
++        model = aidge_core.sequential([
++            aidge_core.PaddedMaxPooling2D(kernel_dims=(3, 3), name="padded_max_pool")
++        ])
++
++        self.unit_test_export(model, "PaddedMaxPooling2D", [[1, 2, 12, 12]], False, False)
++
+     def test_avg_pooling(self):
+         print("AvgPooling2D")
+         model = aidge_core.sequential([

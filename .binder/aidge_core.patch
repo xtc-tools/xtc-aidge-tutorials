@@ -1,0 +1,711 @@
+diff --git a/aidge_core/export_utils/__init__.py b/aidge_core/export_utils/__init__.py
+index 79f6507c..b928bc19 100644
+--- a/aidge_core/export_utils/__init__.py
++++ b/aidge_core/export_utils/__init__.py
+@@ -6,3 +6,4 @@ from .tensor_export import tensor_to_c, generate_input_file
+ from .generate_main import generate_main_cpp, generate_main_compare_cpp, generate_main_inference_time_cpp, generate_main_display_output_cpp
+ from .data_conversion import aidge2c, aidge2export_type
+ from .export_utils import remove_optional_inputs, get_node_from_metaop
++from .export_module import ExportModule
+diff --git a/aidge_core/export_utils/export_module.py b/aidge_core/export_utils/export_module.py
+new file mode 100644
+index 00000000..861b63d3
+--- /dev/null
++++ b/aidge_core/export_utils/export_module.py
+@@ -0,0 +1,18 @@
++from dataclasses import dataclass, field
++
++__all__ = [
++    "ExportModule",
++]
++
++@dataclass
++class ExportModule():
++    forward_name: str
++    inputs_spec: list[dict]
++    outputs_spec: list[dict]
++    module_type: str = "csrc"
++    shlibs: list[str] = field(default_factory=list)
++    arlibs: list[str] = field(default_factory=list)
++    csrcs: list[str] = field(default_factory=list)
++    include_paths: list[str] = field(default_factory=list)
++    headers: list[str] = field(default_factory=list)
++    stats: dict = field(default_factory=dict)
+diff --git a/aidge_core/export_utils/generate_main.py b/aidge_core/export_utils/generate_main.py
+index 4815130d..f8d46b90 100644
+--- a/aidge_core/export_utils/generate_main.py
++++ b/aidge_core/export_utils/generate_main.py
+@@ -2,7 +2,7 @@ import aidge_core
+ from pathlib import Path
+ from aidge_core.export_utils import generate_file, data_conversion, generate_input_file
+ 
+-def generate_main_cpp(export_folder: str, graph_view: aidge_core.GraphView, inputs_tensor=None, labels=None) -> None:
++def generate_main_cpp(export_folder: str, graph_view: aidge_core.GraphView, inputs_tensor=None, labels=None, format="default") -> None:
+     """
+     Generate a C++ file to manage the forward pass of a model using the given graph structure.
+ 
+@@ -54,7 +54,9 @@ def generate_main_cpp(export_folder: str, graph_view: aidge_core.GraphView, inpu
+             generate_input_file(
+                 export_folder=str(Path(export_folder) / "data"), 
+                 array_name=in_name, 
+-                tensor=inputs_tensor)
++                tensor=inputs_tensor,
++                format=format,
++            )
+ 
+     # Generate labels file
+     if labels is not None:
+@@ -86,7 +88,7 @@ def generate_main_cpp(export_folder: str, graph_view: aidge_core.GraphView, inpu
+     )
+ 
+ 
+-def generate_main_compare_cpp(export_folder: str, graph_view: aidge_core.GraphView, inputs_tensor=None) -> None:
++def generate_main_compare_cpp(export_folder: str, graph_view: aidge_core.GraphView, inputs_tensor=None, format="default", atol=1e-6, rtol=1e-3, fmt="f") -> None:
+     """
+     Generate a C++ file to manage the forward pass and compare the output of a model.
+ 
+@@ -101,7 +103,7 @@ def generate_main_compare_cpp(export_folder: str, graph_view: aidge_core.GraphVi
+     :param graph_view: An instance of :py:class:`aidge_core.graph_view`, providing access to nodes and
+                        ordered input/output data within the computational graph.
+     :type graph_view: aidge_core.graph_view
+-    :param inputs_tensor: **For future**argument to provide tensor to use in the main function, not implemented yet!
++    :param inputs_tensor: argument to provide tensor to use in the main function, only applies to first input
+     :type inputs_tensor: None
+     :raises RuntimeError: If there is an inconsistency in the output arguments (names, data types, sizes),
+                           indicating an internal bug in the graph representation.
+@@ -113,21 +115,23 @@ def generate_main_compare_cpp(export_folder: str, graph_view: aidge_core.GraphVi
+     gv_inputs: list[tuple[aidge_core.Node, int]] = graph_view.get_ordered_inputs()
+     gv_outputs: list[tuple[aidge_core.Node, int]] = graph_view.get_ordered_outputs()
+ 
+-    for in_node, in_idx in gv_inputs:
++    for idx, (in_node, in_idx) in enumerate(gv_inputs):
+         in_node_input, in_node_input_idx = in_node.input(in_idx)
+         in_name = f"{in_node.name()}_input_{in_idx}" if in_node_input is None else f"{in_node_input.name()}_output_{in_node_input_idx}"
+         input_tensor = in_node.get_operator().get_input(in_idx)
++        if idx == 0 and inputs_tensor is not None:
++            input_tensor = inputs_tensor
+         if input_tensor is None or input_tensor.undefined():
+             if (int(in_node.get_operator().input_category(in_idx)) & int(aidge_core.InputCategory.Optional)):
+                 aidge_core.Log.notice(f"Ignoring missing optional input {in_name}.")
+             else:
+                 inputs_name.append(in_name)
+                 if inputs_tensor is not None:
+-                    aidge_core.Log.notice("No support for inputs_tensor argument yet.")
++                    aidge_core.Log.notice("No support for inputs_tensor argument yet for inputs > 1.")
+                 aidge_core.Log.warn(f"No input tensor set for {in_name}, main generated will not be functionnal after code generation.")
+         else:
+             inputs_name.append(in_name)
+-            generate_input_file(str(Path(export_folder) / "data"), array_name=in_name, tensor=input_tensor)
++            generate_input_file(str(Path(export_folder) / "data"), array_name=in_name, tensor=input_tensor, format=format)
+ 
+     for out_node, out_id in gv_outputs:
+         out_name = f"{out_node.name()}_output_{out_id}"
+@@ -136,9 +140,9 @@ def generate_main_compare_cpp(export_folder: str, graph_view: aidge_core.GraphVi
+         outputs_dtype.append(data_conversion.aidge2c(out_tensor.dtype()))
+         outputs_size.append(out_tensor.size())
+         if out_tensor is None or out_tensor.undefined():
+-            aidge_core.Log.notice(f"No input tensor set for {out_name}, main generated will not be functionnal after code generation.")
++            aidge_core.Log.notice(f"No output tensor set for {out_name}, main generated will not be functionnal after code generation.")
+         else:
+-            generate_input_file(str(Path(export_folder) / "data"), array_name=out_name+"_expected", tensor=out_tensor)
++            generate_input_file(str(Path(export_folder) / "data"), array_name=out_name+"_expected", tensor=out_tensor, format=format)
+ 
+     if len(outputs_name) != len(outputs_dtype) or len(outputs_name) != len(outputs_size):
+             raise RuntimeError("FATAL: Output args list does not have the same length this is an internal bug.")
+@@ -151,10 +155,13 @@ def generate_main_compare_cpp(export_folder: str, graph_view: aidge_core.GraphVi
+         inputs_name=inputs_name,
+         outputs_name=outputs_name,
+         outputs_dtype=outputs_dtype,
+-        outputs_size=outputs_size
++        outputs_size=outputs_size,
++        atol=atol,
++        rtol=rtol,
++        fmt=fmt,
+     )
+ 
+-def generate_main_inference_time_cpp(export_folder: str, graph_view: aidge_core.GraphView, nb_iterations, nb_warmup, inputs_tensor=None) -> None:
++def generate_main_inference_time_cpp(export_folder: str, graph_view: aidge_core.GraphView, nb_iterations, nb_warmup, inputs_tensor=None, format="default") -> None:
+     """
+     Generate a C++ file to manage the forward pass of a model using the given graph structure.
+ 
+@@ -195,7 +202,12 @@ def generate_main_inference_time_cpp(export_folder: str, graph_view: aidge_core.
+                 aidge_core.Log.warn(f"No input tensor set for {in_name}, main generated will not be functionnal after code generation.")
+         else:
+             inputs_name.append(in_name)
+-            aidge_core.export_utils.generate_input_file(str(Path(export_folder) / "data"), array_name=in_name, tensor=input_tensor)
++            aidge_core.export_utils.generate_input_file(
++                str(Path(export_folder) / "data"),
++                array_name=in_name,
++                tensor=input_tensor,
++                format=format,
++            )
+ 
+     for out_node, out_id in gv_outputs:
+         outputs_name.append(f"{out_node.name()}_output_{out_id}")
+@@ -219,7 +231,7 @@ def generate_main_inference_time_cpp(export_folder: str, graph_view: aidge_core.
+         nb_warmup=nb_warmup
+     )
+ 
+-def generate_main_display_output_cpp(export_folder: str, graph_view: aidge_core.GraphView, inputs_tensor=None) -> None:
++def generate_main_display_output_cpp(export_folder: str, graph_view: aidge_core.GraphView, inputs_tensor=None, format="default") -> None:
+     """
+     Generate a C++ file to manage the forward pass of a model using the given graph structure.
+ 
+@@ -260,7 +272,12 @@ def generate_main_display_output_cpp(export_folder: str, graph_view: aidge_core.
+                 aidge_core.Log.warn(f"No input tensor set for {in_name}, main generated will not be functionnal after code generation.")
+         else:
+             inputs_name.append(in_name)
+-            aidge_core.export_utils.generate_input_file(str(Path(export_folder) / "data"), array_name=in_name, tensor=input_tensor)
++            aidge_core.export_utils.generate_input_file(
++                str(Path(export_folder) / "data"),
++                array_name=in_name,
++                tensor=input_tensor,
++                format=format,
++            )
+ 
+     for out_node, out_id in gv_outputs:
+         outputs_name.append(f"{out_node.name()}_output_{out_id}")
+@@ -280,4 +297,4 @@ def generate_main_display_output_cpp(export_folder: str, graph_view: aidge_core.
+         outputs_name=outputs_name,
+         outputs_dtype=outputs_dtype,
+         outputs_size=outputs_size
+-    )
+\ No newline at end of file
++    )
+diff --git a/aidge_core/export_utils/node_export.py b/aidge_core/export_utils/node_export.py
+index 6cd04b28..cad71c1e 100644
+--- a/aidge_core/export_utils/node_export.py
++++ b/aidge_core/export_utils/node_export.py
+@@ -1,11 +1,14 @@
+ import aidge_core
+ from pathlib import Path
++from copy import deepcopy
+ 
+ from aidge_core.export_utils import data_conversion, code_generation
+ from abc import ABC, abstractmethod
+ from typing import List, Dict
+ 
++from .export_module import ExportModule
+ 
++ROOT = Path(__file__).parent
+ 
+ def get_chan(tensor: aidge_core.Tensor) -> int:
+     dformat = tensor.dformat()
+@@ -433,6 +436,14 @@ class ExportNodeCpp(ExportNode):
+     config_path: str = "include/layers"
+     # Config_folder_extension
+     config_extension: str = "h"
++    # Path to source for kernel for export_module
++    src_cpath: str = "src/nodes"
++    # Path to header for kernel for export_module
++    src_hpath: str = "include/nodes"
++    # Path to header for kernel memory layout info
++    meminfo_hpath: str = "include/meminfo"
++    # System libraries
++    libraries: list = None
+     # Dev mode - Symlink copy
+     dev_mode: bool = False
+ 
+@@ -476,6 +487,148 @@ class ExportNodeCpp(ExportNode):
+             self.add_kernel_to_copy(src_path)
+ 
+ 
++    def export_module(
++            self,
++            export_folder: str,
++            inputs_specs: list,
++            inputs_formats: list,
++    ) -> tuple[list[ExportModule], list[str]]:
++        if self.config_template is None:
++            raise ValueError("config_template have not been defined")
++        if self.include_list is None:
++            raise ValueError("include_list have not been defined")
++        if self.kernels_to_copy is None:
++            raise ValueError("kernels_to_copy have not been defined")
++        if self.forward_template is None:
++            raise ValueError("forward_template have not been defined")
++
++        # Check for deprecated usage of kernels_to_copy
++        if len(self.kernels_to_copy) > 0 and isinstance(self.kernels_to_copy[0], str):
++            aidge_core.Log.warn("This way of using kernels_to_copy is deprecated. " \
++                                "Please consider using the add_kernel_to_copy() function instead.")
++            self.reformat_kernels_to_copy()
++
++        forward_name = self.attributes["name"]
++        export_path = Path(export_folder)
++        sources = []
++        headers = []
++        include_paths = []
++        source_headers = []
++
++        kernel_include_list = []
++        for kernel in self.kernels_to_copy:
++
++            # Copy the kernel file
++            kernel_src_path = Path(kernel["src_path"])
++            kernel_dst_path = Path(kernel["dst_path"])
++            code_generation.copy_file(
++                kernel_src_path,
++                str(export_path / kernel_dst_path),
++                self.dev_mode
++            )
++
++            # Include the kernel file within the fwd
++            if kernel["fwd_include"]:
++                kernel_include_list.append(
++                    kernel_dst_path / (kernel_src_path.stem + kernel_src_path.suffix))
++
++        if self.config_template != "":
++            path_to_definition = f"{self.config_path}/{forward_name}.{self.config_extension}"
++
++            try:
++                code_generation.generate_file(
++                    str(export_path / path_to_definition),
++                    self.config_template,
++                    **self.attributes
++                )
++            except Exception as e:
++                raise RuntimeError(f"Error when creating config file for {self.node.name()}[{self.node.type()}].") from e
++            kernel_include_list.append(path_to_definition)
++
++
++        # Generate per node h/c files
++        # Generate prototype file
++        header_file = Path(self.src_hpath) / f"{forward_name}.h"
++        code_generation.generate_file(
++            str(export_path / header_file),
++            ROOT / "templates" / "node_header.jinja",
++            **self.attributes
++        )
++        headers += [str(header_file)]
++        source_headers += self.include_list
++        source_headers += kernel_include_list
++
++        # Generate source file
++        attributes = {
++            **self.attributes,
++            **dict(
++                mem_info=True,
++                aidge_cmp=False,
++                save_output=False,
++            ),
++        }
++        forward_str = code_generation.generate_str(
++            self.forward_template,
++            **attributes,
++        )
++        source_file = Path(self.src_cpath) / f"{forward_name}.cpp"
++        libraries = [] if self.libraries is None else self.libraries
++        attributes = {
++            **self.attributes,
++            **dict(
++                actions=[forward_str],
++                headers=[header_file] + source_headers,
++                libraries=libraries,
++            ),
++        }
++        code_generation.generate_file(
++            str(export_path / source_file),
++            ROOT / "templates" / "node_src.jinja",
++            **attributes,
++        )
++        sources += [str(source_file)]
++
++        attributes = {
++            **self.attributes,
++            **dict(
++                mem_info=False,
++                aidge_cmp=True,
++                save_output=True,
++            ),
++        }
++        # Generate call
++        forward_call = code_generation.generate_str(
++            ROOT / "templates" / "node_call.jinja",
++            **attributes,
++        )
++
++        # Generate meminfo for output
++        attributes = {
++            **self.attributes,
++            **dict(meminfo=True),
++        }
++        meminfo_file = Path(self.meminfo_hpath) / f"{forward_name}.h"
++        code_generation.generate_file(
++            str(export_path / meminfo_file),
++            ROOT / "templates" / "node_meminfo.jinja",
++            **attributes,
++        )
++        headers += [str(meminfo_file)]
++
++        include_paths += [
++            str(Path(hdr).parent) for hdr in source_headers
++        ]
++        return [
++            ExportModule(
++                forward_name,
++                deepcopy(inputs_specs),
++                [], # TODO: output spec
++                module_type="csrc",
++                csrcs=sources,
++                headers=headers,
++                include_paths=include_paths,
++            )], [forward_call]
++
+     def export(self, export_folder: str):
+         """Defines how to export the node definition.
+ 
+@@ -489,6 +642,8 @@ class ExportNodeCpp(ExportNode):
+         :return: List of include paths with the paths for kernels and configuration files.
+         :rtype: list[str]
+         """
++        if hasattr(self, "export_module"):
++            return []
+         if self.config_template is None:
+             raise ValueError("config_template have not been defined")
+         if self.include_list is None:
+@@ -538,6 +693,8 @@ class ExportNodeCpp(ExportNode):
+     def forward(self):
+         """Generates code for a forward pass using the `forward_template`.
+         """
++        if hasattr(self, "export_module"):
++            return []
+         if self.forward_template is None:
+             raise ValueError("forward_template have not been defined")
+         forward_call: str = code_generation.generate_str(
+diff --git a/aidge_core/export_utils/scheduler_export.py b/aidge_core/export_utils/scheduler_export.py
+index 92b098d9..e96452c4 100644
+--- a/aidge_core/export_utils/scheduler_export.py
++++ b/aidge_core/export_utils/scheduler_export.py
+@@ -147,6 +147,9 @@ def scheduler_export(scheduler, export_folder_path: str, export_lib: ExportLib =
+                 )
+                 outputs_size.append(op.attributes["out_size"][idx])
+ 
++    # Remove duplicates and sort headers by name
++    headers = sorted(list(dict.fromkeys([str(path) for path in list_configs])))
++
+     func_name = "model_forward"
+     ROOT = Path(__file__).resolve().parents[0]
+ 
+@@ -163,7 +166,7 @@ def scheduler_export(scheduler, export_folder_path: str, export_lib: ExportLib =
+         str(dnn_folder / "src" / "forward.cpp"),
+         forward_template,
+         func_name=func_name,
+-        headers=set(list_configs),
++        headers=headers,
+         actions=list_actions,
+         # Note: Graph may not have inputs, so we need to check with output
+         # In the future, we should remove this as it is not compatible
+diff --git a/aidge_core/export_utils/templates/c_data.jinja b/aidge_core/export_utils/templates/c_data.jinja
+index 3709379e..f047a2f6 100644
+--- a/aidge_core/export_utils/templates/c_data.jinja
++++ b/aidge_core/export_utils/templates/c_data.jinja
+@@ -1,6 +1,6 @@
+ {#- For libraries #}
+ #include <stdint.h>
+  {# Design header of the array -#}
+-static const {{ data_t }} {{ name }}[{{ dims |join("*") }}] __attribute__((section("nn_data"))) = {
++static const {{ data_t }} {{ name }}[{{ dims |join("*") }}] __attribute__((section("nn_data"))){% if mem_align is defined and mem_align %} __attribute__((aligned({{ mem_align }}))){% endif %} = {
+ {{ values |join(", ") }}
+ };
+diff --git a/aidge_core/export_utils/templates/forward.jinja b/aidge_core/export_utils/templates/forward.jinja
+index e054c348..c1001b6d 100644
+--- a/aidge_core/export_utils/templates/forward.jinja
++++ b/aidge_core/export_utils/templates/forward.jinja
+@@ -17,11 +17,7 @@
+ {%- endfor %}
+ 
+ // Memory block
+-{%- if mem_section == None %}
+-static {{mem_ctype}} mem[{{peak_mem}}];
+-{%- else %}
+-static {{mem_ctype}} mem[{{peak_mem}}] __attribute__((section("{{ mem_section }}")));
+-{%- endif %}
++static {{mem_ctype}} mem[{{peak_mem}}]{% if mem_section is defined and mem_section %} __attribute__((section("{{ mem_section }}"))){% endif %}{% if mem_align is defined and mem_align %} __attribute__((aligned({{ mem_align }}))){% endif %};
+ 
+ {# Forward function #}
+ {#- Support multiple inputs with different datatypes and multiple outputs with different datatypes -#}
+diff --git a/aidge_core/export_utils/templates/main_benchmark_inference_time.jinja b/aidge_core/export_utils/templates/main_benchmark_inference_time.jinja
+index 0943265e..fb94b0e4 100644
+--- a/aidge_core/export_utils/templates/main_benchmark_inference_time.jinja
++++ b/aidge_core/export_utils/templates/main_benchmark_inference_time.jinja
+@@ -4,7 +4,7 @@
+ 
+ #include "forward.hpp"
+ {% for name in inputs_name %}
+-#include "{{ name }}.h"
++#include "data/{{ name }}.h"
+ {% endfor %}
+ 
+ {% set printf_formats = {
+@@ -20,26 +20,31 @@
+     "uint64_t": "%llu"
+ } %}
+ 
++static double elapsed_seconds(const timespec &start, const timespec &end)
++{
++    return (end.tv_sec - start.tv_sec) + (end.tv_nsec - start.tv_nsec) * 1e-9;
++}
++
+ int main()
+ {
+     // Initialize the output arrays
+     {%- for o in range(outputs_name | length) %}
+     {{ outputs_dtype[o] }}* {{ outputs_name[o] }} = nullptr;
+     {% endfor %}
+-    clock_t start;
+-    clock_t end;
++    timespec start, end;
+     double times[{{ nb_iterations }}] = {0};
+     for (std::size_t i = 0; i < {{ nb_iterations }} + {{ nb_warmup }}; ++i) {
+         if (i < {{ nb_warmup }}) {
+             {{ func_name }}({{ inputs_name|join(", ") }}{% if inputs_name %}, {% endif %}&{{ outputs_name|join(", &") }});
+         } else {
+-            start = clock();
++            clock_gettime(CLOCK_MONOTONIC, &start);
+             {{ func_name }}({{ inputs_name|join(", ") }}{% if inputs_name %}, {% endif %}&{{ outputs_name|join(", &") }});
+             {{ func_name }}({{ inputs_name|join(", ") }}{% if inputs_name %}, {% endif %}&{{ outputs_name|join(", &") }});
+             {{ func_name }}({{ inputs_name|join(", ") }}{% if inputs_name %}, {% endif %}&{{ outputs_name|join(", &") }});
+             {{ func_name }}({{ inputs_name|join(", ") }}{% if inputs_name %}, {% endif %}&{{ outputs_name|join(", &") }});
+-            end = clock();
+-            times[i - {{ nb_warmup }}] = ((double)(end - start)/CLOCKS_PER_SEC)/4.0;
++            clock_gettime(CLOCK_MONOTONIC, &end);
++            double elapsed = elapsed_seconds(start, end);
++            times[i - {{ nb_warmup }}] = elapsed/4.0;
+         }
+     }
+ 
+diff --git a/aidge_core/export_utils/templates/main_compare.jinja b/aidge_core/export_utils/templates/main_compare.jinja
+index fbf90ff1..0a2a52a0 100644
+--- a/aidge_core/export_utils/templates/main_compare.jinja
++++ b/aidge_core/export_utils/templates/main_compare.jinja
+@@ -11,6 +11,8 @@
+     "uint64_t": "%llu"
+ } %}
+ #include <cstdio>      // printf
++#include <cstring>     // strcmp
++#include <cstdlib>     // getenv
+ #include <cmath>       // std::abs
+ #include "forward.hpp" // Exported forward
+ 
+@@ -26,13 +28,17 @@
+ 
+ int main()
+ {
++    const char *dump_str = std::getenv("DUMP");
++    bool dump = true;
++    if (dump_str && std::strcmp(dump_str, "0") == 0) dump = false;
++
+     // Initialize the output arrays
+     {%- for o in range(outputs_name | length) %}
+     {{ outputs_dtype[o] }}* {{ outputs_name[o] }} = nullptr;
+     {% endfor %}
+ 
+-    const float abs_err = 0.001f;
+-    const float rel_err = 0.0001f;
++    const float abs_err = {{atol}};
++    const float rel_err = {{rtol}};
+ 
+     // Call the forward function
+     {{ func_name }}({{ inputs_name|join(", ") }}{% if inputs_name %}, {% endif %}&{{ outputs_name|join(", &") }});
+@@ -47,17 +53,17 @@ int main()
+     nb_identical = 0;
+     nb_out = 0;
+     printf("{{ outputs_name[o] }}:\n");
+-    printf("---------------------------------------------------------------------------------\n"
+-           "|\tIdx\t|\tExpected\t|\tPredicted\t|\tERROR ?\t|\n"
+-           "|-------------------------------------------------------------------------------|\n");
++    if (dump) printf("----------------------------------------------------------------------------------------\n"
++              "|\tIdx  \t|\tExpected    \t|\tPredicted   \t|\tERROR ?\t|\n"
++              "|--------------------------------------------------------------------------------------|\n");
+ 
+     for (int o = 0; o < {{ outputs_size[o] }}; ++o) {
+-        printf("|\t%5d\t|\t%8f\t|\t %8f\t|", o, {{ outputs_name[o] }}_expected[o], {{ outputs_name[o] }}[o]);
++        if (dump) printf("|\t%5d\t|\t%12{{fmt}}\t|\t%12{{fmt}}\t|", o, {{ outputs_name[o] }}_expected[o], {{ outputs_name[o] }}[o]);
+         if (std::abs({{ outputs_name[o] }}_expected[o] - {{ outputs_name[o] }}[o]) <= abs_err + rel_err * std::abs({{ outputs_name[o] }}_expected[o])) {
+             nb_identical++;
+-            printf("\t\t|\n");
++            if (dump) printf("\t\t|\n");
+         } else {
+-            printf("\tX\t|\n");
++            if (dump) printf("\tX\t|\n");
+         }
+         nb_out++;
+     }
+@@ -66,7 +72,7 @@ int main()
+         return_code = 1;
+     }
+ 
+-    printf("\n\n");
++    if (dump) printf("\n\n");
+     printf("---------------------------------\n");
+     printf("|\t\t|\tTOTAL\t|\n");
+     printf("|-------------------------------|\n");
+diff --git a/aidge_core/export_utils/templates/node_call.jinja b/aidge_core/export_utils/templates/node_call.jinja
+new file mode 100644
+index 00000000..c2302c33
+--- /dev/null
++++ b/aidge_core/export_utils/templates/node_call.jinja
+@@ -0,0 +1,6 @@
++{% filter indent(width=4, first=False) %}
++{%- for outidx in range(nb_out) %}
++{{out_cdtype[outidx]}}* {{out_name[outidx]}} = ({{out_cdtype[outidx]}}*) mem + {{out_name[outidx]|upper}}_OFFSET;
++{%- endfor %}
++{{name}}({% for idx in range(nb_in) %}{% if idx > 0 %}, {% endif %}{{in_name[idx]}}{% endfor %}{% for idx in range(nb_out) %}{% if nb_in + idx > 0 %}, {% endif %}{{out_name[idx]}}{% endfor %});
++{% endfilter %}
+diff --git a/aidge_core/export_utils/templates/node_header.jinja b/aidge_core/export_utils/templates/node_header.jinja
+new file mode 100644
+index 00000000..aaa399b9
+--- /dev/null
++++ b/aidge_core/export_utils/templates/node_header.jinja
+@@ -0,0 +1,12 @@
++{#- For name header -#}
++#ifndef {{ name|upper }}_PROTO_H
++#define {{ name|upper }}_PROTO_H
++
++#ifdef __cplusplus
++extern "C"
++#else
++extern
++#endif
++void {{name}}({% for idx in range(nb_in) %}{% if idx > 0 %}, {% endif %}const {{in_cdtype[idx]}} * __restrict__ input{{idx}}{% endfor %}{% for idx in range(nb_out) %}{% if nb_in + idx > 0 %}, {% endif %}{{out_cdtype[idx]}} * __restrict__ output{{idx}}{% endfor %});
++
++#endif /* {{ name|upper }}_PROTO_H */
+diff --git a/aidge_core/export_utils/templates/node_meminfo.jinja b/aidge_core/export_utils/templates/node_meminfo.jinja
+new file mode 100644
+index 00000000..dc4f3f67
+--- /dev/null
++++ b/aidge_core/export_utils/templates/node_meminfo.jinja
+@@ -0,0 +1,11 @@
++{#- For name header -#}
++#ifndef {{ name|upper }}_MEMINFO_H
++#define {{ name|upper }}_MEMINFO_H
++
++// OUTPUTS MEM LAYOUT
++{% for outidx in range(nb_out) -%}
++#define {{ out_name[outidx]|upper }}_SIZE {{ mem_info_size[outidx]}}
++#define {{ out_name[outidx]|upper }}_OFFSET {{ mem_info_offset[outidx]}}
++{% endfor %}
++
++#endif /* {{ name|upper }}_MEMINFO_H */
+diff --git a/aidge_core/export_utils/templates/node_src.jinja b/aidge_core/export_utils/templates/node_src.jinja
+new file mode 100644
+index 00000000..0e5e3592
+--- /dev/null
++++ b/aidge_core/export_utils/templates/node_src.jinja
+@@ -0,0 +1,30 @@
++#include <stdint.h>
++
++#define SAVE_OUTPUTS false  // Save the feature maps into files (Not compatible with every export)
++#define AIDGE_CMP    false  // Compare export and aidge feature maps (Not compatible with every export)
++
++#ifdef SAVE_OUTPUTS
++#include <sys/types.h>
++#include <sys/stat.h>
++#endif
++
++// Libraries
++{%- for lib in libraries %}
++#include <{{ lib }}>
++{%- endfor %}
++
++// Layer & memory configurations
++{%- for header in headers %}
++#include "{{ header }}"
++{%- endfor %}
++
++#ifdef __cplusplus
++extern "C"
++#endif
++void {{name}}({% for idx in range(nb_in) %}{% if idx > 0 %}, {% endif %}const {{in_cdtype[idx]}} * __restrict__ {{in_name[idx]}}{% endfor %}{% for idx in range(nb_out) %}{% if nb_in + idx > 0 %}, {% endif %}{{out_cdtype[idx]}} * __restrict__ {{out_name[idx]}}{% endfor %})
++{
++    {%- for action in actions %}
++    {{ action }}
++    {%- endfor %}
++
++}
+diff --git a/aidge_core/export_utils/tensor_export.py b/aidge_core/export_utils/tensor_export.py
+index 43f013dd..50f4804f 100644
+--- a/aidge_core/export_utils/tensor_export.py
++++ b/aidge_core/export_utils/tensor_export.py
+@@ -1,4 +1,5 @@
+ import os
++import numpy as np
+ 
+ from aidge_core.export_utils.code_generation import generate_file
+ from aidge_core.export_utils.data_conversion import aidge2c
+@@ -22,19 +23,26 @@ def tensor_to_c(tensor:Tensor)->str:
+ 
+ def generate_input_file(export_folder:str,
+                         array_name:str,
+-                        tensor:Tensor):
++                        tensor:Tensor,
++                        format: str = "default",
++                        ):
+ 
++    mem_align = 64 # TODO parameterize
+     # If directory doesn't exist, create it
+     if not os.path.exists(export_folder):
+         os.makedirs(export_folder)
+     print(f"gen : {export_folder}/{array_name}.h")
++    values = np.array(tensor)
++    assert format in ["default", "nchw", "nhwc"]
++    if format == "nhwc" and len(values.shape) == 4:
++        values = np.transpose(values, (0, 2, 3, 1))
+     ROOT = Path(__file__).resolve().parents[0]
+     generate_file(
+         file_path=f"{export_folder}/{array_name}.h",
+         template_path=str(ROOT / "templates" / "c_data.jinja"),
+-        dims = tensor.dims(),
++        dims = values.shape,
+         data_t = aidge2c(tensor.dtype()),
+         name = array_name,
+-        values = list(tensor)
++        values = values.reshape(-1).tolist(),
++        mem_align=mem_align,
+     )
+-
+diff --git a/aidge_core/mem_info.py b/aidge_core/mem_info.py
+index d87bea93..ab569408 100644
+--- a/aidge_core/mem_info.py
++++ b/aidge_core/mem_info.py
+@@ -3,14 +3,14 @@ import subprocess
+ import shutil
+ from pathlib import Path
+ import aidge_core
+-from typing import Tuple, List
++from typing import Dict, Tuple, List
+ 
+ import matplotlib.pyplot as plt
+ import aidge_core.mem_info
+ import numpy as np
+ 
+ # Default memory management, which can be used for development
+-def compute_default_mem_info(scheduler: aidge_core.Scheduler) -> Tuple[int, List]:
++def compute_default_mem_info(scheduler: aidge_core.Scheduler) -> Tuple[int, Dict]:
+     """Basic memory management concatenate memory block, no memory reuse !
+ 
+     :param scheduler: Aidge scheduler
+@@ -20,6 +20,10 @@ def compute_default_mem_info(scheduler: aidge_core.Scheduler) -> Tuple[int, List
+     """
+     mem_info = {}
+     mem_size = 0
++    mem_align = 16 # TODO parameterize, warning this a a number of float elements!
++
++    def align_to(size: int, align: int) -> int:
++        return (size + align - 1) // align * align
+ 
+     # Exclude Producers and the last layers (because the results are stored outside the export)
+     for i, node in enumerate(scheduler.get_sequential_static_scheduling()):
+@@ -37,8 +41,9 @@ def compute_default_mem_info(scheduler: aidge_core.Scheduler) -> Tuple[int, List
+                     "offset": mem_size
+                 })
+ 
+-                # Increment offset for the next layer
+-                mem_size += mem
++                # Increment offset for the next layer, with alignment
++                mem_size += align_to(mem, mem_align)
++                assert mem_size % mem_align == 0
+             mem_info[node] = node_mem_info
+         else:
+             mem_info[node] = [] # No meminfo for producer

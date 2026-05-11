@@ -38,7 +38,7 @@ RUN python -m pip install --upgrade pip
 
 # Copy docker files
 COPY .binder/requirements.txt /docker/requirements.txt
-COPY .binder/requirements.txt /docker/aidge_requirements.txt
+COPY .binder/aidge_requirements.txt /docker/aidge_requirements.txt
 COPY .binder/entrypoint.sh /docker/entrypoint.sh
 RUN chmod +x /docker/entrypoint.sh
 
@@ -49,19 +49,45 @@ RUN pip install --no-cache-dir -r /docker/requirements.txt
 RUN pip install --no-cache-dir -r /docker/aidge_requirements.txt
 
 # Install XTC
-ENV XTC_REPO=https://github.com/xtc-tools/xtc
-ENV XTC_REVISION=f8246794a6951eb5627959e8d8e07f9ae9f6f070
+ENV XTC_REPO=https://github.com/guillon/xtc
+ENV XTC_REVISION=e9ece26f56271b1f819e8d96352f704356781f51
 RUN git clone $XTC_REPO /tmp/xtc && \
     cd /tmp/xtc && \
     git checkout $XTC_REV && \
     pip install --no-cache-dir . && \
-    pip install --no-cache-dir -r mlir_requirements.txt && \
     pip install --no-cache-dir -r tvm_requirements.txt && \
     cd / && \
     rm -rf /tmp/xtc
-      
+#    pip install --no-cache-dir -r mlir_requirements.txt &&
+
+# Install Aidge Export Compile
+ENV AEC_REPO=https://gitlab.eclipse.org/cguillon/aidge-export-compile
+ENV AEC_REVISION=d1973dc40754f3260c6d52b4250510770fc38bc4
+RUN git clone $AEC_REPO /tmp/aidge-export-compile && \
+    cd /tmp/aidge-export-compile && \
+    git checkout $AEC_REV && \
+    pip install --no-cache-dir . && \
+    cd / && \
+    rm -rf /tmp/aidge-export-compile
+
+# Install Aidge Benchmarks
+ENV AB_REPO=https://gitlab.eclipse.org/cguillon/aidge_benchmark
+ENV AB_REVISION=b2c357fc92c4cf2b136553da05954481c2d2e797
+RUN git clone $AB_REPO /tmp/aidge_benchmark && \
+    cd /tmp/aidge_benchmark && \
+    git checkout $AB_REV && \
+    pip install --no-cache-dir . && \
+    cd / && \
+    rm -rf /tmp/aidge_benchmark
+
+# Patch aidge
+COPY .binder/aidge_core.patch /docker/
+COPY .binder/aidge_export_cpp.patch /docker
+RUN cd /usr/local/lib/python3.10/site-packages/ && patch -p1 -i aidge_core.patch
+RUN cd /usr/local/lib/python3.10/site-packages/ && patch -p1 -i aidge_export_cpp.patch
+
 # # Patch server.py from ai_edge_model_explorer to run on Binder
-# COPY $BINDER_DIR/patched_server.py /tmp/patched_server.py
+# COPY .binder/patched_server.py /tmp/patched_server.py
 # RUN python -c "import model_explorer, os; import shutil; shutil.copy('/tmp/patched_server.py', os.path.join(os.path.dirname(model_explorer.__file__), 'server.py'))"
 
 # Copy tutorials files to writable directory
